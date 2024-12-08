@@ -1,0 +1,92 @@
+# "org" ensures this Service is used with the correct Serverless Framework Access Key.
+org: nasa01
+# "app" enables Serverless Framework Dashboard features and sharing them with other Services.
+app: backend
+# "service" is the name of this project. This will also be added to your AWS resource names.
+service: backend
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  profile: ${env:PROVIDER_PROFILE}
+  region: eu-north-1  # Ange regionen du vill använda
+  iam:
+    role: ${env:PROVIDER_IAM_ROLE}
+
+functions:
+  getNotes:
+    handler: functions/getNotes/index.getNotes
+    events:
+      - httpApi:
+          path: /notes
+          method: get
+
+  addNotes:
+    handler: functions/addNotes/index.addNotes
+    events:
+      - httpApi:
+          path: /notes/add
+          method: post
+
+  updateNotes:
+    handler: functions/updateNotes/index.updateNotes
+    events:
+      - httpApi:
+          path: /notes/{id}
+          method: put
+  
+  deleteNotes:
+    handler: functions/deleteNotes/index.deleteNotes
+    events:
+      - httpApi:
+          path: /notes/{id}
+          method: delete
+
+  signUp:
+    handler: functions/signUp/index.signUp
+    events:
+      - httpApi:
+          path: /auth/signup
+          method: post
+
+  login:
+    handler: functions/login/index.login
+    events:
+      - httpApi:
+          path: /auth/login
+          method: post
+
+
+resources: 
+  Resources:
+    notesDB:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${env:RESOURCES_TABLENAME}  # Dynamiskt tabellnamn från miljövariabel
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S  # String
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH  # Partition key
+        BillingMode: PAY_PER_REQUEST  # Skala automatiskt baserat på användning
+
+
+    usersDB:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: accounts  # Dynamiskt tabellnamn från miljövariabel
+        AttributeDefinitions:
+          - AttributeName: username
+            AttributeType: S  # String
+        KeySchema:
+          - AttributeName: username
+            KeyType: HASH  # Partition key
+        BillingMode: PAY_PER_REQUEST  # Skala automatiskt baserat på användning
+
+plugins:
+  - serverless-dotenv-plugin  # För att läsa miljövariabler från .env-fil
+  # - serverless-webpack  # Om du använder Webpack för bygg, avkommentera här
+
+build:
+  esbuild: false  # Om du inte använder esbuild kan du stänga av det här
