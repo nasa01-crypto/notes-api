@@ -1,58 +1,63 @@
-import middy from '@middy/core';
-import { validateToken } from '../middleware/auth';
-import { updateNoteSchema } from '../../schemas/putNotes/schema'; // Schema för PUT
-import validator from '@middy/validator';
-import AWS from 'aws-sdk';
-
+// functions/notes/updateNote/index.js
+const AWS = require('aws-sdk');
+const middy = require('middy');
+const createError = require('http-errors');
 const dynamoDb = new AWS.DynamoDB.DocumentClient();
-const TABLE_NAME = process.env.RESOURCES_TABLENAME;
+const { validateNote } = require('../../../middleware/noteValidatorMiddleware');
+const { authenticateUser } = require('../../../middleware/authMiddleware');
+const httpErrorHandler = require('@middy/http-error-handler');
+const httpJsonBodyParser = require('@middy/http-json-body-parser');
 
-const updateNoteHandler = async (event) => {
-  const { id } = event.pathParameters;
-  const { title, text } = JSON.parse(event.body);
+const TABLE_NAME = 'Notes';
+
+const updateNote = async (id, title, text, userId) => {
+  const timestamp = new Date().toISOString();
 
   const params = {
     TableName: TABLE_NAME,
-    Key: { id },
-    UpdateExpression: 'set title = :title, text = :text, modifiedAt = :modifiedAt',
+    Key: { id, userId },
+    UpdateExpression: 'SET title = :title, text = :text, modifiedAt = :modifiedAt',
     ExpressionAttributeValues: {
       ':title': title,
       ':text': text,
-      ':modifiedAt': new Date().toISOString(),
+      ':modifiedAt': timestamp,
     },
-    ReturnValues: 'UPDATED_NEW',
+    ReturnValues: 'ALL_NEW',
   };
 
   try {
     const result = await dynamoDb.update(params).promise();
-    
-    if (!result.Attributes) {
-      return {
-        statusCode: 404,
-        body: JSON.stringify({
-          message: 'Note not found',
-        }),
-      };
-    }
+    return result.Attributes;
+  } catch (error) {
+    throw createError(500, 'Unable to update note in DynamoDB: ' + error.message);
+  }
+};
 
+// Lambda-handler för updateNote
+const handler = async (event) => {
+  const userId = event.user.userId;
+  const { id, title, text } = JSON.parse(event.body);
+
+  try {
+    const updatedNote = await updateNote(id, title, text, userId);
+    if (!updatedNote) {
+      throw createError(404, 'Note not found');  // 404 om anteckningen inte hittades
+    }
     return {
       statusCode: 200,
-      body: JSON.stringify({
-        message: 'Note updated successfully',
-        data: result.Attributes,
-      }),
+      body: JSON.stringify(updatedNote),
     };
   } catch (error) {
-    console.error('Error updating note:', error);
     return {
-      statusCode: 500,
-      body: JSON.stringify({
-        message: 'Internal Server Error',
-      }),
+      statusCode: error.statusCode || 500,
+      body: JSON.stringify({ message: error.message }),
     };
   }
 };
 
-export const updateNote = middy(updateNoteHandler)
-  .use(validateToken)
-  .use(validator({ inputSchema: updateNoteSchema }));
+// Wrap Lambda handler med Middy
+module.exports.handler = middy(handler)
+  .use(authenticateUser)
+  .use(validateNote)
+  .use(httpJsonBodyParser())
+  .use(httpErrorHandler());

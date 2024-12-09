@@ -1,57 +1,81 @@
-import { generateToken } from '../middleware/auth';  // Importera funktion för att skapa JWT-token
-import AWS from 'aws-sdk';
-import bcrypt from 'bcryptjs';  // För att jämföra lösenord
-
+const AWS = require('aws-sdk');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const createError = require('http-errors');
+const { validateLogin } = require('../../../middleware/noteValidatorMiddleware');
 const dynamoDb = new AWS.DynamoDB.DocumentClient();
-const TABLE_NAME = process.env.RESOURCES_TABLENAME;  // DynamoDB-tabellnamn
+const middy = require('middy');
+const httpErrorHandler = require('@middy/http-error-handler');
+const httpJsonBodyParser = require('@middy/http-json-body-parser');
 
-const loginHandler = async (event) => {
+const TABLE_NAME = 'Users'; // DynamoDB-tabell för användare
+
+// Hjälpfunktion för att skapa en JWT-token
+const createToken = (email) => {
+  const payload = { email };
+  const secret = process.env.JWT_SECRET; // Din hemliga nyckel för JWT
+  const options = { expiresIn: '1h' }; // Token går ut efter 1 timme
+
+  return jwt.sign(payload, secret, options);
+};
+
+// Hjälpfunktion för att hitta användare i DynamoDB
+const findUserByEmail = async (email) => {
+  const params = {
+    TableName: TABLE_NAME,
+    Key: { email }, // Hitta användare via e-post
+  };
+
   try {
-    const { username, password } = JSON.parse(event.body);
-
-    // Hämta användaren från databasen
-    const params = {
-      TableName: TABLE_NAME,
-      Key: { username },
-    };
-
     const result = await dynamoDb.get(params).promise();
-    const user = result.Item;
+    return result.Item; // Om användaren finns, returnera objektet
+  } catch (error) {
+    throw createError(500, 'Unable to retrieve user: ' + error.message);
+  }
+};
 
+// Lambda handler för login
+const handler = async (event) => {
+  // Validera användardata (email och password)
+  await validateLogin(event);
+
+  const { email, password } = JSON.parse(event.body);
+
+  try {
+    // Hitta användaren i databasen
+    const user = await findUserByEmail(email);
+
+    // Om användaren inte finns, kasta ett 401 Unauthorized-fel
     if (!user) {
-      return {
-        statusCode: 401,
-        body: JSON.stringify({ message: 'Invalid username or password' }),
-      };
+      throw createError(401, 'Invalid credentials');
     }
 
-    // Jämför lösenordet med det hashade lösenordet
-    const passwordMatch = await bcrypt.compare(password, user.password);
+    // Kontrollera om lösenordet är korrekt (jämför hashrade lösenord)
+    const isPasswordValid = await bcrypt.compare(password, user.password);
 
-    if (!passwordMatch) {
-      return {
-        statusCode: 401,
-        body: JSON.stringify({ message: 'Invalid username or password' }),
-      };
+    // Om lösenordet inte stämmer, kasta ett 401 Unauthorized-fel
+    if (!isPasswordValid) {
+      throw createError(401, 'Invalid credentials');
     }
 
-    // Skapa JWT-token om autentiseringen lyckas
-    const token = generateToken({ username });
+    // Skapa en JWT-token för den inloggade användaren
+    const token = createToken(email);
 
+    // Returnera en lyckad inloggning med token
     return {
       statusCode: 200,
       body: JSON.stringify({
         message: 'Login successful',
-        token,  // Returnera token
+        token: token,
       }),
     };
   } catch (error) {
-    console.error('Error during login:', error);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ message: 'Could not login' }),
-    };
+    console.error(error);
+    throw createError(500, 'Unable to login');
   }
 };
 
-export const login = loginHandler;
+// Använd middleware för att bearbeta JSON och hantera fel
+module.exports.handler = middy(handler)
+  .use(httpJsonBodyParser()) // Bearbeta JSON i body
+  .use(httpErrorHandler()); // Hantera HTTP-fel

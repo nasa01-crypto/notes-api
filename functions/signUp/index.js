@@ -1,62 +1,73 @@
-import { generateToken } from '../middleware/auth';  // Importera funktion för att skapa JWT-token
-import AWS from 'aws-sdk';
-import bcrypt from 'bcryptjs';  // För att hasha lösenord
-
+const AWS = require('aws-sdk');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const createError = require('http-errors');
+const { validateSignUp } = require('../../../middleware/noteValidatorMiddleware');
 const dynamoDb = new AWS.DynamoDB.DocumentClient();
-const TABLE_NAME = process.env.RESOURCES_TABLENAME;  // DynamoDB-tabellnamn
+const middy = require('middy');
+const httpErrorHandler = require('@middy/http-error-handler');
+const httpJsonBodyParser = require('@middy/http-json-body-parser');
 
-const signUpHandler = async (event) => {
-  try {
-    const { username, password } = JSON.parse(event.body);
+const TABLE_NAME = 'Users'; // DynamoDB-tabell för användare
 
-    // Kontrollera om användarnamnet redan finns
-    const params = {
-      TableName: TABLE_NAME,
-      Key: { username },
-    };
+// Hjälpfunktion för att skapa en JWT-token
+const createToken = (email) => {
+  const payload = { email };
+  const secret = process.env.JWT_SECRET; // Din hemliga nyckel för JWT
+  const options = { expiresIn: '1h' }; // Token går ut efter 1 timme
 
-    const existingUser = await dynamoDb.get(params).promise();
-    if (existingUser.Item) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ message: 'Username already exists' }),
-      };
-    }
+  return jwt.sign(payload, secret, options);
+};
 
-    // Hasha lösenordet
-    const hashedPassword = await bcrypt.hash(password, 10);
+// Hjälpfunktion för att skapa en ny användare
+const createUser = async (email, password) => {
+  // Hasha lösenordet
+  const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Spara användaren i DynamoDB
-    const user = {
-      username,
+  const params = {
+    TableName: TABLE_NAME,
+    Item: {
+      email,
       password: hashedPassword,
       createdAt: new Date().toISOString(),
-    };
+    },
+  };
 
-    const putParams = {
-      TableName: TABLE_NAME,
-      Item: user,
-    };
+  try {
+    await dynamoDb.put(params).promise();
+  } catch (error) {
+    throw createError(500, 'Unable to create user: ' + error.message);
+  }
+};
 
-    await dynamoDb.put(putParams).promise();
+// Lambda handler för signUp
+const handler = async (event) => {
+  // Validera användardata
+  await validateSignUp(event);
 
-    // Skapa JWT-token
-    const token = generateToken({ username });
+  const { email, password } = JSON.parse(event.body);
+
+  try {
+    // Skapa användaren
+    await createUser(email, password);
+
+    // Skapa en JWT-token för den nya användaren
+    const token = createToken(email);
 
     return {
       statusCode: 201,
       body: JSON.stringify({
         message: 'User created successfully',
-        token,  // Returnera token
+        token: token,
       }),
     };
   } catch (error) {
-    console.error('Error during signup:', error);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ message: 'Could not create user' }),
-    };
+    console.error(error);
+    throw createError(500, 'Unable to sign up user');
   }
 };
 
-export const signUp = signUpHandler;
+// Använd middleware för att bearbeta JSON och hantera fel
+module.exports.handler = middy(handler)
+  .use(httpJsonBodyParser()) // Bearbeta JSON i body
+  .use(httpErrorHandler()); // Hantera HTTP-fel

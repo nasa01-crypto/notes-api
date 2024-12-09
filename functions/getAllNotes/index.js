@@ -1,38 +1,45 @@
-import middy from '@middy/core';
-import { validateToken } from '../middleware/auth';
-import { getNotesSchema } from '../../schemas/getNotes/schema'; // Schema för GET
-import validator from '@middy/validator';
-import AWS from 'aws-sdk';
-
+// functions/notes/getAllNotes/index.js
+const AWS = require('aws-sdk');
+const middy = require('middy');
 const dynamoDb = new AWS.DynamoDB.DocumentClient();
-const TABLE_NAME = process.env.RESOURCES_TABLENAME;
+const { authenticateUser } = require('../../../middleware/authMiddleware');
+const httpErrorHandler = require('@middy/http-error-handler');
+const httpJsonBodyParser = require('@middy/http-json-body-parser');
 
-const getAllNotesHandler = async (event) => {
+const TABLE_NAME = 'Notes';
+
+// Funktion för att hämta alla anteckningar för en användare
+const getAllNotes = async (userId) => {
+  const params = {
+    TableName: TABLE_NAME,
+    KeyConditionExpression: 'userId = :userId',
+    ExpressionAttributeValues: { ':userId': userId },
+  };
+
+  const result = await dynamoDb.query(params).promise();
+  return result.Items;
+};
+
+// Lambda-handler för getAllNotes
+const handler = async (event) => {
+  const userId = event.user.userId;  // Hämtar användarens ID från JWT-token
+
   try {
-    const params = {
-      TableName: TABLE_NAME,
-    };
-
-    const result = await dynamoDb.scan(params).promise();
-
+    const notes = await getAllNotes(userId);
     return {
       statusCode: 200,
-      body: JSON.stringify({
-        message: 'Notes retrieved successfully',
-        data: result.Items,
-      }),
+      body: JSON.stringify(notes),
     };
   } catch (error) {
-    console.error('Error retrieving notes:', error);
     return {
-      statusCode: 500,
-      body: JSON.stringify({
-        message: 'Internal Server Error',
-      }),
+      statusCode: error.statusCode || 500,
+      body: JSON.stringify({ message: error.message }),
     };
   }
 };
 
-export const getAllNotes = middy(getAllNotesHandler)
-  .use(validateToken)
-  .use(validator({ inputSchema: getNotesSchema }));
+// Wrap Lambda handler med Middy, använd autentisering och HTTP Error Handler
+module.exports.handler = middy(handler)
+  .use(authenticateUser)  // Middleware för att autentisera användare
+  .use(httpJsonBodyParser())  // Middleware för att hantera JSON-kroppar
+  .use(httpErrorHandler());   // Hantera eventuella HTTP-fel
