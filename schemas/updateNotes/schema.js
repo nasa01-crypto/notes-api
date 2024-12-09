@@ -1,5 +1,5 @@
-// postNotes/schema.js
-export const noteSchema = {
+// putNotes/schema.js
+export const updateNoteSchema = {
     type: 'object',
     properties: {
       title: { type: 'string', maxLength: 50 },

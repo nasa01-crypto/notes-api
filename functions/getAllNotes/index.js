@@ -1,31 +1,29 @@
 import middy from '@middy/core';
 import { validateToken } from '../middleware/auth';
-import { deleteNoteSchema } from '../../schemas/deleteNotes/schema'; // Schema för DELETE
+import { getNotesSchema } from '../../schemas/getNotes/schema'; // Schema för GET
 import validator from '@middy/validator';
 import AWS from 'aws-sdk';
 
 const dynamoDb = new AWS.DynamoDB.DocumentClient();
 const TABLE_NAME = process.env.RESOURCES_TABLENAME;
 
-const deleteNoteHandler = async (event) => {
-  const { id } = event.pathParameters;
-
-  const params = {
-    TableName: TABLE_NAME,
-    Key: { id },
-  };
-
+const getAllNotesHandler = async (event) => {
   try {
-    await dynamoDb.delete(params).promise();
+    const params = {
+      TableName: TABLE_NAME,
+    };
+
+    const result = await dynamoDb.scan(params).promise();
 
     return {
       statusCode: 200,
       body: JSON.stringify({
-        message: 'Note deleted successfully',
+        message: 'Notes retrieved successfully',
+        data: result.Items,
       }),
     };
   } catch (error) {
-    console.error('Error deleting note:', error);
+    console.error('Error retrieving notes:', error);
     return {
       statusCode: 500,
       body: JSON.stringify({
@@ -35,6 +33,6 @@ const deleteNoteHandler = async (event) => {
   }
 };
 
-export const deleteNote = middy(deleteNoteHandler)
+export const getAllNotes = middy(getAllNotesHandler)
   .use(validateToken)
-  .use(validator({ inputSchema: deleteNoteSchema }));
+  .use(validator({ inputSchema: getNotesSchema }));
