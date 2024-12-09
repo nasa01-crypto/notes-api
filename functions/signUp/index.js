@@ -1,72 +1,62 @@
-const bcrypt = require('bcryptjs');
-const AWS = require('aws-sdk');
+import { generateToken } from '../middleware/auth';  // Importera funktion för att skapa JWT-token
+import AWS from 'aws-sdk';
+import bcrypt from 'bcryptjs';  // För att hasha lösenord
 
-// För att interagera med DynamoDB
 const dynamoDb = new AWS.DynamoDB.DocumentClient();
+const TABLE_NAME = process.env.RESOURCES_TABLENAME;  // DynamoDB-tabellnamn
 
-// Dynamisk import av nanoid
-async function generateUserId() {
-    const { nanoid } = await import('nanoid'); // Dynamisk import för nanoid
-    return nanoid(); // Generera användar-ID
-}
+const signUpHandler = async (event) => {
+  try {
+    const { username, password } = JSON.parse(event.body);
 
-// Skapa användarkonto i DynamoDB
-async function createAccount(username, hashedPassword, userID, firstname, lastname) {
-    try {
-        await dynamoDb.put({
-            TableName: process.env.ACCOUNTS_TABLE, // Miljövariabel för tabellnamnet
-            Item: {
-                username: username,
-                password: hashedPassword,
-                firstname: firstname,
-                lastname: lastname,
-                userID: userID,
-            }
-        }).promise();
+    // Kontrollera om användarnamnet redan finns
+    const params = {
+      TableName: TABLE_NAME,
+      Key: { username },
+    };
 
-        return { success: true, userID: userID };
-    } catch (error) {
-        console.log('Error while creating account:', error);
-        return { success: false, message: 'Could not create account' };
+    const existingUser = await dynamoDb.get(params).promise();
+    if (existingUser.Item) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ message: 'Username already exists' }),
+      };
     }
-}
 
-// Hantera användarregistrering
-async function signup(username, password, firstname, lastname) {
-    try {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const userID = await generateUserId(); // Generera användar-ID med nanoid
+    // Hasha lösenordet
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-        const result = await createAccount(username, hashedPassword, userID, firstname, lastname);
-        return result;
-    } catch (error) {
-        console.error('Error during signup:', error);
-        return { success: false, message: 'Error during signup' };
-    }
-}
+    // Spara användaren i DynamoDB
+    const user = {
+      username,
+      password: hashedPassword,
+      createdAt: new Date().toISOString(),
+    };
 
-// Lambda handler
-module.exports.signUp = async (event) => {
-    const { username, password, firstname, lastname } = JSON.parse(event.body);
+    const putParams = {
+      TableName: TABLE_NAME,
+      Item: user,
+    };
 
-    // Anropa signup-funktionen och hantera resultatet
-    const result = await signup(username, password, firstname, lastname);
+    await dynamoDb.put(putParams).promise();
 
-    // Bygg svaret baserat på om kontot skapades eller inte
-    if (result.success) {
-        return {
-            statusCode: 200,
-            body: JSON.stringify({
-                message: 'Account created successfully',
-                userID: result.userID
-            })
-        };
-    } else {
-        return {
-            statusCode: 400,
-            body: JSON.stringify({
-                message: result.message || 'An error occurred'
-            })
-        };
-    }
+    // Skapa JWT-token
+    const token = generateToken({ username });
+
+    return {
+      statusCode: 201,
+      body: JSON.stringify({
+        message: 'User created successfully',
+        token,  // Returnera token
+      }),
+    };
+  } catch (error) {
+    console.error('Error during signup:', error);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ message: 'Could not create user' }),
+    };
+  }
 };
+
+export const signUp = signUpHandler;

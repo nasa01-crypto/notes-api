@@ -1,76 +1,79 @@
-const AWS = require('aws-sdk');
-const dynamoDB = new AWS.DynamoDB.DocumentClient();
+import AWS from 'aws-sdk';
+import middy from '@middy/core';
+import { validateToken } from '../middleware/auth';  // Middleware för att validera token
+import httpJsonBodyParser from '@middy/http-json-body-parser';  // För att enkelt hantera request body
 
-const TABLE_NAME = process.env.RESOURCES_TABLENAME;
+const dynamoDb = new AWS.DynamoDB.DocumentClient();
+const TABLE_NAME = process.env.RESOURCES_TABLENAME;  // Tabellnamn för anteckningar
 
-module.exports.updateNotes = async (event) => {
-  const noteId = event.pathParameters.id;
-  const { title, text } = JSON.parse(event.body);
+const updateNoteHandler = async (event) => {
+  const { id, title, text } = JSON.parse(event.body);  // Hämta anteckningens data från request body
+  const user = event.user;  // Användaren som är inloggad (från JWT-token)
 
-  // Kontrollera om titeln och texten finns och är inom gränserna
-  if (!title || title.length > 50) {
+  // Kontrollera om id, title eller text saknas
+  if (!id || !title || !text) {
     return {
       statusCode: 400,
-      body: JSON.stringify({ message: 'Title must be provided and less than 50 characters' }),
+      body: JSON.stringify({ message: 'ID, title, and text are required' }),
     };
   }
 
-  if (!text || text.length > 300) {
-    return {
-      statusCode: 400,
-      body: JSON.stringify({ message: 'Text must be provided and less than 300 characters' }),
-    };
-  }
-
-  const timestamp = new Date().toISOString();
-
-  const updatedNote = {
-    id: noteId,
-    title,
-    text,
-    modifiedAt: timestamp,
+  // Försök hämta anteckningen från DynamoDB
+  const params = {
+    TableName: TABLE_NAME,
+    Key: { id },
   };
 
-  // Första steget: Kontrollera om anteckningen finns innan vi försöker uppdatera den
   try {
-    const getResult = await dynamoDB.get({
-      TableName: TABLE_NAME,
-      Key: { id: noteId },
-    }).promise();
+    const result = await dynamoDb.get(params).promise();
+    const note = result.Item;
 
-    // Om anteckningen inte finns
-    if (!getResult.Item) {
+    // Kontrollera om anteckningen finns
+    if (!note) {
       return {
         statusCode: 404,
         body: JSON.stringify({ message: 'Note not found' }),
       };
     }
 
-    // Steg två: Uppdatera anteckningen i DynamoDB
-    const updateResult = await dynamoDB.update({
+    // Kontrollera att den inloggade användaren äger anteckningen
+    if (note.user !== user.username) {
+      return {
+        statusCode: 403,
+        body: JSON.stringify({ message: 'You can only update your own notes' }),
+      };
+    }
+
+    // Uppdatera anteckningens titel och text
+    const updatedNote = {
+      ...note,
+      title,
+      text,
+      modifiedAt: new Date().toISOString(),  // Sätt ny modifierad tid
+    };
+
+    const updateParams = {
       TableName: TABLE_NAME,
-      Key: { id: noteId },
-      UpdateExpression: 'set title = :title, #text = :text, modifiedAt = :modifiedAt',
-      ExpressionAttributeNames: {
-        '#text': 'text',  // Alias för "text" för att undvika konflikt med reserverade ord
-      },
-      ExpressionAttributeValues: {
-        ':title': title,
-        ':text': text,
-        ':modifiedAt': timestamp,
-      },
-      ReturnValues: 'ALL_NEW', // Få tillbaka den uppdaterade anteckningen
-    }).promise();
+      Item: updatedNote,
+    };
+
+    // Uppdatera anteckningen i DynamoDB
+    await dynamoDb.put(updateParams).promise();
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ message: 'Note updated successfully', note: updateResult.Attributes }),
+      body: JSON.stringify(updatedNote),  // Returnera den uppdaterade anteckningen
     };
   } catch (error) {
     console.error('Error updating note:', error);
     return {
       statusCode: 500,
-      body: JSON.stringify({ message: 'Internal Server Error. Failed to update note.' }),
+      body: JSON.stringify({ message: 'Could not update note' }),
     };
   }
 };
+
+// Wrappa Lambda-funktionen med Middy för att använda validateToken och body parser middleware
+export const updateNote = middy(updateNoteHandler)
+  .use(validateToken)  // Verifiera token för att säkerställa att användaren är inloggad
+  .use(httpJsonBodyParser());  // För att enkelt hantera JSON-body i förfrågan

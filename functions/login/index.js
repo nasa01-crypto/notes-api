@@ -1,94 +1,57 @@
-const AWS = require('aws-sdk');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+import { generateToken } from '../middleware/auth';  // Importera funktion för att skapa JWT-token
+import AWS from 'aws-sdk';
+import bcrypt from 'bcryptjs';  // För att jämföra lösenord
 
-// För att interagera med DynamoDB
 const dynamoDb = new AWS.DynamoDB.DocumentClient();
+const TABLE_NAME = process.env.RESOURCES_TABLENAME;  // DynamoDB-tabellnamn
 
-// Hämta användare från DynamoDB
-async function getUser(username) {
-    try {
-        const user = await dynamoDb.get({
-            TableName: process.env.ACCOUNTS_TABLE, // Tabellnamn från miljövariabel
-            Key: { username } // Hämta användaren baserat på användarnamn
-        }).promise();
+const loginHandler = async (event) => {
+  try {
+    const { username, password } = JSON.parse(event.body);
 
-        if (user?.Item) {
-            return user.Item; // Om användaren finns, returnera den
-        } else {
-            return false; // Om användaren inte finns, returnera false
-        }
-    } catch (error) {
-        console.error('Error fetching user from DynamoDB:', error);
-        return false;
-    }
-}
+    // Hämta användaren från databasen
+    const params = {
+      TableName: TABLE_NAME,
+      Key: { username },
+    };
 
-// Hantera inloggning
-async function login(username, password) {
-    const user = await getUser(username); // Hämta användaren från DynamoDB
+    const result = await dynamoDb.get(params).promise();
+    const user = result.Item;
 
     if (!user) {
-        return { success: false, message: 'Incorrect username or password' }; // Om användaren inte finns
+      return {
+        statusCode: 401,
+        body: JSON.stringify({ message: 'Invalid username or password' }),
+      };
     }
 
-    // Jämför lösenordet med det hashade värdet i databasen
-    const correctPassword = await bcrypt.compare(password, user.password);
+    // Jämför lösenordet med det hashade lösenordet
+    const passwordMatch = await bcrypt.compare(password, user.password);
 
-    if (!correctPassword) {
-        return { success: false, message: 'Incorrect username or password' }; // Om lösenordet inte stämmer
+    if (!passwordMatch) {
+      return {
+        statusCode: 401,
+        body: JSON.stringify({ message: 'Invalid username or password' }),
+      };
     }
 
-    // Hämta hemlig nyckel från miljövariabler (JWS_SECRET istället för KEY)
-    const jwsSecret = process.env.JWS_SECRET; 
-    if (!jwsSecret) {
-        console.error('JWS_SECRET is not defined!');
-        return { success: false, message: 'Internal server error' };
-    }
+    // Skapa JWT-token om autentiseringen lyckas
+    const token = generateToken({ username });
 
-    // Om lösenordet är korrekt, skapa JWT-token
-    const token = jwt.sign(
-        { userId: user.userID, username: user.username }, // Payload (användarinformation)
-        jwsSecret, // Den hemliga nyckeln (från miljövariabel)
-        { expiresIn: '1h' } // Token kommer att löpa ut efter 1 timme
-    );
-
-    return { success: true, token }; // Returnera resultatet med token
-}
-
-// Exportera login-funktionen så att den kan användas i Lambda
-module.exports.login = async (event) => {
-    try {
-        // Hämta data från HTTP-begäran
-        const { username, password } = JSON.parse(event.body);
-
-        // Anropa login-funktionen
-        const result = await login(username, password);
-
-        // Skicka tillbaka svaret baserat på inloggningsresultatet
-        if (result.success) {
-            return {
-                statusCode: 200,
-                body: JSON.stringify({
-                    message: 'Login successful',
-                    token: result.token
-                })
-            };
-        } else {
-            return {
-                statusCode: 400,
-                body: JSON.stringify({
-                    message: result.message || 'An error occurred'
-                })
-            };
-        }
-    } catch (error) {
-        console.error('Error handling the request:', error);
-        return {
-            statusCode: 500,
-            body: JSON.stringify({
-                message: 'Internal server error'
-            })
-        };
-    }
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        message: 'Login successful',
+        token,  // Returnera token
+      }),
+    };
+  } catch (error) {
+    console.error('Error during login:', error);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ message: 'Could not login' }),
+    };
+  }
 };
+
+export const login = loginHandler;
